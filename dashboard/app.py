@@ -62,6 +62,11 @@ def dashboard():
     try:
         status = manager.get_container_status()
         versions = manager.get_available_versions(limit=20)
+        # is_latest is now set by get_available_versions based on GitHub releases
+        # Ensure all versions have is_latest set (default to False if not set)
+        for version in versions:
+            if "is_latest" not in version:
+                version["is_latest"] = False
         local_images = manager.get_local_images()
     except Exception as e:
         flash(f"Error loading dashboard: {str(e)}", "error")
@@ -94,6 +99,11 @@ def api_versions():
     """API endpoint for available versions."""
     try:
         versions = manager.get_available_versions(limit=20)
+        # is_latest is now set by get_available_versions based on GitHub releases
+        # Ensure all versions have is_latest set (default to False if not set)
+        for version in versions:
+            if "is_latest" not in version:
+                version["is_latest"] = False
         return jsonify(versions)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

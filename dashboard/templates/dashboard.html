@@ -117,8 +117,7 @@
                     <option value="">-- Select a version --</option>
                     <template x-for="version in versions" :key="version.version">
                         <option :value="version.version" :selected="version.version === status.current_version">
-                            <span x-text="version.version"></span>
-                            <span x-text="' (' + version.updated + ')'"></span>
+                            <span x-text="version.version + (version.is_latest === true ? ' (Latest)' : ' (' + version.updated + ')')"></span>
                         </option>
                     </template>
                 </select>

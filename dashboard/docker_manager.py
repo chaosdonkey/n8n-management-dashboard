@@ -26,15 +26,40 @@ class N8NManager:
 
     def get_available_versions(self, limit: int = 20) -> List[Dict[str, str]]:
         """
-        Fetch available n8n versions from Docker Hub.
+        Fetch available n8n versions from Docker Hub and GitHub releases.
         
         Args:
             limit: Maximum number of versions to return
             
         Returns:
-            List of dicts with 'version' and 'updated' keys, sorted newest first
+            List of dicts with 'version', 'updated', and 'is_latest' keys, sorted newest first
         """
         try:
+            # First, get the latest production release from GitHub
+            latest_production_version = None
+            try:
+                github_response = requests.get(
+                    "https://api.github.com/repos/n8n-io/n8n/releases/latest",
+                    headers={"Accept": "application/vnd.github+json"},
+                    timeout=5
+                )
+                if github_response.status_code == 200:
+                    latest_release = github_response.json()
+                    tag_name = latest_release.get("tag_name", "")
+                    # Remove 'n8n@' prefix if present (e.g., "n8n@1.121.3" -> "1.121.3")
+                    if tag_name.startswith("n8n@"):
+                        tag_name = tag_name[4:]
+                    # Remove 'v' prefix if present (e.g., "v1.121.3" -> "1.121.3")
+                    if tag_name.startswith("v"):
+                        tag_name = tag_name[1:]
+                    # Only use if it's not a pre-release
+                    if not latest_release.get("prerelease", False):
+                        latest_production_version = tag_name
+            except Exception:
+                # If GitHub API fails, continue without latest marker
+                pass
+            
+            # Fetch versions from Docker Hub
             url = "https://hub.docker.com/v2/repositories/n8nio/n8n/tags"
             params = {"page_size": 100}
             versions = []
@@ -51,13 +76,27 @@ class N8NManager:
                     if tag_name in ["latest", "next"]:
                         continue
                     
-                    # Validate semver
+                    # Skip architecture-specific tags (amd64, arm64, etc.)
+                    # Only include base versions without architecture suffixes
+                    if any(arch in tag_name for arch in ["-amd64", "-arm64"]):
+                        continue
+                    
+                    # Skip pre-release versions (experimental, alpha, beta, rc)
+                    # Only include production releases
+                    if any(pre in tag_name.lower() for pre in ["-exp.", "-exp", ".exp", "-alpha", "-beta", "-rc", ".alpha", ".beta", ".rc"]):
+                        continue
+                    
+                    # Validate semver and ensure it's a production release
                     try:
-                        semver.Version.parse(tag_name)
+                        version_obj = semver.Version.parse(tag_name)
+                        # Skip if it's a pre-release version (has prerelease component)
+                        if version_obj.prerelease:
+                            continue
                         updated = tag.get("last_updated", "")
                         versions.append({
                             "version": tag_name,
-                            "updated": updated
+                            "updated": updated,
+                            "is_latest": False  # Will be set below based on GitHub
                         })
                     except ValueError:
                         continue
@@ -74,6 +113,13 @@ class N8NManager:
             
             # Sort by version descending (newest first)
             versions.sort(key=lambda x: semver.Version.parse(x["version"]), reverse=True)
+            
+            # Mark the latest production version from GitHub
+            if latest_production_version:
+                for version in versions:
+                    if version["version"] == latest_production_version:
+                        version["is_latest"] = True
+                        break
             
             return versions[:limit]
         except Exception as e:
