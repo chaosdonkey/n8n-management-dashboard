@@ -1,0 +1,362 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - n8n Manager{% endblock %}
+
+{% block content %}
+<div x-data="dashboard()" x-init="init()" class="space-y-6">
+    <!-- Container Status Card -->
+    <div class="bg-slate-800 rounded-lg shadow-xl p-6">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xl font-bold text-white">Container Status</h2>
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-400">Version:</span>
+                <span class="px-3 py-1 bg-blue-600 text-white rounded-md font-semibold text-sm" x-text="status.current_version || 'unknown'"></span>
+            </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <p class="text-sm text-gray-400 mb-1">Status</p>
+                <p class="text-lg font-semibold">
+                    <span :class="{
+                        'text-green-400': status.status === 'running',
+                        'text-red-400': status.status === 'stopped' || status.status === 'exited',
+                        'text-yellow-400': status.status === 'not_found',
+                        'text-gray-400': status.status === 'error'
+                    }">
+                        <span x-text="status.status || 'loading...'"></span>
+                    </span>
+                </p>
+            </div>
+            <div>
+                <p class="text-sm text-gray-400 mb-1">Current Version</p>
+                <p class="text-lg font-semibold text-white" x-text="status.current_version || 'unknown'"></p>
+            </div>
+            <div>
+                <p class="text-sm text-gray-400 mb-1">Started At</p>
+                <p class="text-sm text-gray-300" x-text="status.started_at || 'N/A'"></p>
+            </div>
+            <div>
+                <p class="text-sm text-gray-400 mb-1">Health</p>
+                <p class="text-sm text-gray-300" x-text="status.health || 'N/A'"></p>
+            </div>
+            <div x-show="status.cpu_percent !== null && status.cpu_percent !== undefined">
+                <p class="text-sm text-gray-400 mb-1">CPU Usage</p>
+                <div class="flex items-center gap-2">
+                    <div class="flex-1 bg-slate-700 rounded-full h-2.5">
+                        <div class="bg-blue-500 h-2.5 rounded-full transition-all" :style="'width: ' + Math.min(status.cpu_percent || 0, 100) + '%'"></div>
+                    </div>
+                    <span class="text-sm font-semibold text-white" x-text="(status.cpu_percent || 0).toFixed(1) + '%'"></span>
+                </div>
+            </div>
+            <div x-show="status.memory_percent !== null && status.memory_percent !== undefined">
+                <p class="text-sm text-gray-400 mb-1">Memory Usage</p>
+                <div class="flex items-center gap-2">
+                    <div class="flex-1 bg-slate-700 rounded-full h-2.5">
+                        <div class="bg-green-500 h-2.5 rounded-full transition-all" :style="'width: ' + Math.min(status.memory_percent || 0, 100) + '%'"></div>
+                    </div>
+                    <span class="text-sm font-semibold text-white" x-text="(status.memory_percent || 0).toFixed(1) + '%'"></span>
+                </div>
+                <p class="text-xs text-gray-500 mt-1" x-show="status.memory_usage && status.memory_limit">
+                    <span x-text="formatBytes(status.memory_usage)"></span> / <span x-text="formatBytes(status.memory_limit)"></span>
+                </p>
+            </div>
+        </div>
+        <div class="mt-4 flex gap-2 flex-wrap">
+            <button
+                @click="controlContainer('start')"
+                :disabled="status.status === 'running' || loading"
+                class="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-md transition"
+            >
+                Start
+            </button>
+            <button
+                @click="controlContainer('stop')"
+                :disabled="status.status !== 'running' || loading"
+                class="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-md transition"
+            >
+                Stop
+            </button>
+            <button
+                @click="controlContainer('restart')"
+                :disabled="status.status !== 'running' || loading"
+                class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-md transition"
+            >
+                Restart
+            </button>
+            <button
+                @click="refreshStatus()"
+                :disabled="loading"
+                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-md transition"
+            >
+                Refresh
+            </button>
+            <button
+                @click="openN8n()"
+                :disabled="status.status !== 'running'"
+                class="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50 text-white rounded-md transition"
+                title="Open n8n in a new tab"
+            >
+                Open n8n
+            </button>
+        </div>
+    </div>
+
+    <!-- Version Selection Card -->
+    <div class="bg-slate-800 rounded-lg shadow-xl p-6">
+        <h2 class="text-xl font-bold text-white mb-4">Version Upgrade</h2>
+        <div class="space-y-4">
+            <div>
+                <label for="version-select" class="block text-sm font-medium text-gray-300 mb-2">
+                    Select Version
+                </label>
+                <select
+                    id="version-select"
+                    x-model="selectedVersion"
+                    class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                    <option value="">-- Select a version --</option>
+                    <template x-for="version in versions" :key="version.version">
+                        <option :value="version.version" :selected="version.version === status.current_version">
+                            <span x-text="version.version"></span>
+                            <span x-text="' (' + version.updated + ')'"></span>
+                        </option>
+                    </template>
+                </select>
+            </div>
+            
+            <div x-show="selectedVersion && selectedVersion !== status.current_version" class="flex gap-2">
+                <button
+                    @click="checkUpgrade()"
+                    :disabled="loading || !selectedVersion"
+                    class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-md transition"
+                >
+                    Check Upgrade
+                </button>
+                <button
+                    @click="performUpgrade()"
+                    :disabled="loading || !selectedVersion || !upgradeSafe"
+                    class="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-md transition"
+                >
+                    Upgrade
+                </button>
+            </div>
+
+            <div x-show="upgradeWarnings.length > 0" class="p-4 bg-yellow-900 border border-yellow-700 rounded-md">
+                <p class="text-yellow-100 font-semibold mb-2">Warnings:</p>
+                <ul class="list-disc list-inside text-yellow-200 space-y-1">
+                    <template x-for="warning in upgradeWarnings" :key="warning">
+                        <li x-text="warning"></li>
+                    </template>
+                </ul>
+            </div>
+
+            <div x-show="upgradeProgress" class="p-4 bg-blue-900 border border-blue-700 rounded-md">
+                <p class="text-blue-100" x-text="upgradeProgress"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Local Images Card -->
+    <div class="bg-slate-800 rounded-lg shadow-xl p-6">
+        <h2 class="text-xl font-bold text-white mb-4">Local Images</h2>
+        <div class="space-y-2">
+            <template x-for="(image, index) in localImages" :key="image.version">
+                <div class="flex items-center justify-between p-3 bg-slate-700 rounded-md">
+                    <div>
+                        <p class="text-white font-medium" x-text="image.version"></p>
+                        <p class="text-sm text-gray-400" x-text="'Created: ' + image.created"></p>
+                    </div>
+                    <button
+                        x-show="index === 1"
+                        @click="rollback()"
+                        :disabled="loading"
+                        class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-md transition text-sm"
+                    >
+                        Rollback
+                    </button>
+                </div>
+            </template>
+            <p x-show="localImages.length === 0" class="text-gray-400">No local images found</p>
+        </div>
+    </div>
+</div>
+
+<script>
+function dashboard() {
+    return {
+        status: {{ status | tojson }},
+        versions: {{ versions | tojson }},
+        localImages: {{ local_images | tojson }},
+        selectedVersion: '',
+        upgradeSafe: false,
+        upgradeWarnings: [],
+        upgradeProgress: '',
+        loading: false,
+
+        init() {
+            this.refreshStatus();
+            // Auto-refresh status every 5 seconds to update CPU/memory
+            setInterval(() => {
+                if (!this.loading) {
+                    this.refreshStatus();
+                }
+            }, 5000);
+        },
+
+        formatBytes(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+        },
+
+        async refreshStatus() {
+            this.loading = true;
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                this.status = data;
+            } catch (error) {
+                console.error('Error refreshing status:', error);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async controlContainer(action) {
+            this.loading = true;
+            try {
+                const response = await fetch(`/api/control/${action}`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                if (data.success) {
+                    setTimeout(() => this.refreshStatus(), 1000);
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async checkUpgrade() {
+            if (!this.selectedVersion) return;
+            
+            this.loading = true;
+            this.upgradeWarnings = [];
+            this.upgradeSafe = false;
+            
+            try {
+                const response = await fetch('/api/check-upgrade', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        target_version: this.selectedVersion
+                    })
+                });
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else {
+                    this.upgradeSafe = data.safe;
+                    this.upgradeWarnings = data.warnings || [];
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async performUpgrade() {
+            if (!this.selectedVersion || !this.upgradeSafe) return;
+            
+            if (!confirm(`Are you sure you want to upgrade to version ${this.selectedVersion}? A backup will be created automatically.`)) {
+                return;
+            }
+            
+            this.loading = true;
+            this.upgradeProgress = 'Creating backup...';
+            
+            try {
+                const response = await fetch('/api/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        target_version: this.selectedVersion
+                    })
+                });
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    this.upgradeProgress = '';
+                } else {
+                    this.upgradeProgress = 'Upgrade successful! Refreshing...';
+                    setTimeout(() => {
+                        this.refreshStatus();
+                        this.selectedVersion = '';
+                        this.upgradeSafe = false;
+                        this.upgradeWarnings = [];
+                        this.upgradeProgress = '';
+                    }, 2000);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+                this.upgradeProgress = '';
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async rollback() {
+            if (!confirm('Are you sure you want to rollback to the previous version? A backup will be created automatically.')) {
+                return;
+            }
+            
+            this.loading = true;
+            this.upgradeProgress = 'Rolling back...';
+            
+            try {
+                const response = await fetch('/api/rollback', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    this.upgradeProgress = '';
+                } else {
+                    this.upgradeProgress = 'Rollback successful! Refreshing...';
+                    setTimeout(() => {
+                        this.refreshStatus();
+                        this.upgradeProgress = '';
+                    }, 2000);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+                this.upgradeProgress = '';
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        openN8n() {
+            if (this.status.status === 'running') {
+                window.open('http://localhost:5678', '_blank');
+            }
+        }
+    }
+}
+</script>
+{% endblock %}
+

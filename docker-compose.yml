@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: n8n-manager-socket-proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      INFO: 1
+      NETWORKS: 1
+      VOLUMES: 1
+      POST: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      ALLOW_RESTART: 1
+      AUTH: 0
+      SECRETS: 0
+      EXEC: 0
+      BUILD: 0
+    networks:
+      - internal
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: n8n-manager-dashboard
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DOCKER_HOST: tcp://socket-proxy:2375
+      N8N_CONTAINER_NAME: n8n
+      SECRET_KEY: ${SECRET_KEY}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+    volumes:
+      - ./backups:/app/backups
+    depends_on:
+      - socket-proxy
+    networks:
+      - internal
+      - web
+    restart: unless-stopped
+
+  n8n:
+    image: n8nio/n8n:${N8N_VERSION:-latest}
+    container_name: n8n
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${TZ:-Europe/London}
+      TZ: ${TZ:-Europe/London}
+    networks:
+      - web
+    restart: unless-stopped
+
+networks:
+  internal:
+    driver: bridge
+  web:
+    driver: bridge
+
+volumes:
+  n8n_data:
+    driver: local
+
