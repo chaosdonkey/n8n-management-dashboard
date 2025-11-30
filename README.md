@@ -12,6 +12,8 @@ A self-hosted management dashboard for n8n that provides a web UI for version up
 - **Localhost Security**: Dashboard only accessible from localhost
 - **Password Protection**: Simple password-based authentication
 
+<img width="1297" height="792" alt="Screenshot 2025-11-30 at 12 30 59" src="https://github.com/user-attachments/assets/831f53d5-1304-4711-b4e5-1ceb28cce1e0" />
+
 ## Prerequisites
 
 - Docker Desktop installed and running
