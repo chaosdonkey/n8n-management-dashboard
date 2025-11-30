@@ -109,6 +109,17 @@ def api_versions():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/local-images")
+@login_required
+def api_local_images():
+    """API endpoint for local images."""
+    try:
+        local_images = manager.get_local_images()
+        return jsonify(local_images)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/check-upgrade", methods=["POST"])
 @login_required
 def api_check_upgrade():

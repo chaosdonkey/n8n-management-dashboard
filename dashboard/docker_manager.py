@@ -404,7 +404,11 @@ class N8NManager:
                     ports_config = {}
                     for container_port, host_bindings in port_bindings.items():
                         if host_bindings:
-                            ports_config[container_port] = int(host_bindings[0]["HostPort"])
+                            # Extract port number from "5678/tcp" format if needed
+                            port_num = container_port
+                            if isinstance(container_port, str) and "/" in container_port:
+                                port_num = int(container_port.split("/")[0])
+                            ports_config[port_num] = int(host_bindings[0]["HostPort"])
                 
                 # Extract volume mounts
                 mounts = host_config.get("Mounts", [])
@@ -456,14 +460,20 @@ class N8NManager:
             if callback:
                 callback("Creating new container...")
             
-            # Prepare ports for container creation
-            # Format: {"container_port/tcp": None} for auto-assignment or {"container_port/tcp": host_port}
-            ports = {}
+            # Prepare port bindings in the correct format for host_config
+            # Format: {container_port: host_port} - simple integer mapping
+            port_bindings_dict = {}
+            ports_list = []
             if ports_config:
                 for container_port, host_port in ports_config.items():
-                    ports[f"{container_port}/tcp"] = host_port
+                    # Extract port number if it's in "5678/tcp" format
+                    if isinstance(container_port, str) and "/" in container_port:
+                        container_port = int(container_port.split("/")[0])
+                    port_bindings_dict[int(container_port)] = int(host_port)
+                    ports_list.append(int(container_port))
             else:
-                ports["5678/tcp"] = 5678
+                port_bindings_dict[5678] = 5678
+                ports_list = [5678]
             
             # Convert env_dict back to list format
             env_list = [f"{k}={v}" for k, v in env_dict.items()]
@@ -485,17 +495,31 @@ class N8NManager:
                     # If format is wrong, use default
                     validated_volumes[vol_name] = {"bind": "/home/node/.n8n", "mode": "rw"}
             
-            # Create container using ports parameter (docker-py handles port bindings automatically)
-            # Use ports parameter instead of host_config to avoid compatibility issues
-            new_container = self.client.containers.create(
+            # Use the low-level API to create container with proper host_config
+            # The high-level containers.create() doesn't accept host_config in newer docker-py versions
+            host_config_dict = self.client.api.create_host_config(
+                port_bindings=port_bindings_dict,
+                restart_policy={"Name": "unless-stopped"},
+                binds={vol_name: vol_config["bind"] for vol_name, vol_config in validated_volumes.items()}
+            )
+            
+            # Prepare volumes list for create_container
+            # Format: list of mount points
+            volumes_list = [vol_config["bind"] for vol_config in validated_volumes.values()]
+            
+            # Create container using low-level API
+            # The API expects image as first param, not in a config dict
+            container_response = self.client.api.create_container(
                 image=image_tag,
                 name=self.container_name,
-                detach=True,
-                ports=ports,
-                volumes=validated_volumes,
+                ports=ports_list,
+                host_config=host_config_dict,
                 environment=env_list,
-                restart_policy={"Name": "unless-stopped"}
+                volumes=volumes_list
             )
+            
+            # Get the container object from the response
+            new_container = self.client.containers.get(container_response["Id"])
             
             # Connect to network if specified
             if network_config:
@@ -529,19 +553,43 @@ class N8NManager:
 
     def rollback_to_previous(self) -> str:
         """
-        Rollback to the previous version by using the second-newest local image.
+        Rollback to the previous version by using the first local image that's different from current.
         
         Returns:
             New container ID
         """
         try:
+            # Get current container status to check current version
+            current_status = self.get_container_status()
+            current_version = current_status.get("current_version")
+            
             images = self.get_local_images()
             if len(images) < 2:
                 raise Exception("No previous version found locally")
             
-            # Get second-newest image
-            previous_version = images[1]["version"]
-            return self.update_to_version(previous_version)
+            # Find the first image that's different from current version
+            # Try index 1 first (second-newest), then check others
+            rollback_version = None
+            rollback_index = 1  # Default to second-newest
+            
+            if len(images) > 1 and images[1]["version"] != current_version:
+                rollback_version = images[1]["version"]
+            else:
+                # Find first image that's different from current
+                for i, image in enumerate(images):
+                    if image["version"] != current_version:
+                        rollback_version = image["version"]
+                        rollback_index = i
+                        break
+            
+            if not rollback_version:
+                raise Exception(f"Already running version {current_version}. Cannot rollback to the same version.")
+            
+            # Double-check we're not trying to rollback to current version
+            if rollback_version == current_version:
+                raise Exception(f"Already running version {rollback_version}. Cannot rollback to the same version.")
+            
+            return self.update_to_version(rollback_version)
         except Exception as e:
             raise Exception(f"Failed to rollback: {str(e)}")
 
@@ -563,6 +611,34 @@ class N8NManager:
                         if len(parts) == 2:
                             version = parts[1]
                             created = image.attrs.get("Created", "")
+                            
+                            # If version is "latest", try to resolve to actual version
+                            if version == "latest":
+                                try:
+                                    # Get labels from image attributes
+                                    labels = image.attrs.get("Config", {}).get("Labels", {})
+                                    # Try multiple possible label keys for version
+                                    version_label = (
+                                        labels.get("org.opencontainers.image.version") or
+                                        labels.get("version") or
+                                        labels.get("n8n.version") or
+                                        labels.get("io.n8n.version")
+                                    )
+                                    if version_label:
+                                        version = version_label
+                                    else:
+                                        # Try to get from image repo tags - sometimes latest points to a specific version
+                                        image_repo_tags = image.attrs.get("RepoTags", [])
+                                        for repo_tag in image_repo_tags:
+                                            if ":" in repo_tag and not repo_tag.endswith(":latest"):
+                                                tag_part = repo_tag.split(":")[-1]
+                                                # If it looks like a version number, use it
+                                                if tag_part and tag_part.replace(".", "").replace("-", "").isdigit():
+                                                    version = tag_part
+                                                    break
+                                except Exception:
+                                    pass  # Keep "latest" if we can't resolve it
+                            
                             result.append({
                                 "version": version,
                                 "created": created

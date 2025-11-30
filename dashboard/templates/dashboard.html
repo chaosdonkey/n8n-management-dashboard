@@ -116,7 +116,7 @@
                 >
                     <option value="">-- Select a version --</option>
                     <template x-for="version in versions" :key="version.version">
-                        <option :value="version.version" :selected="version.version === status.current_version">
+                        <option :value="version.version">
                             <span x-text="version.version + (version.is_latest === true ? ' (Latest)' : ' (' + version.updated + ')')"></span>
                         </option>
                     </template>
@@ -159,14 +159,14 @@
     <div class="bg-slate-800 rounded-lg shadow-xl p-6">
         <h2 class="text-xl font-bold text-white mb-4">Local Images</h2>
         <div class="space-y-2">
-            <template x-for="(image, index) in localImages" :key="image.version">
+            <template x-for="(image, index) in localImages" :key="'image-' + index + '-' + image.version">
                 <div class="flex items-center justify-between p-3 bg-slate-700 rounded-md">
                     <div>
                         <p class="text-white font-medium" x-text="image.version"></p>
-                        <p class="text-sm text-gray-400" x-text="'Created: ' + image.created"></p>
+                        <p class="text-sm text-gray-400" x-text="'Created: ' + (image.created || 'N/A')"></p>
                     </div>
                     <button
-                        x-show="index === 1"
+                        x-show="getRollbackIndex() === index && image.version !== status.current_version"
                         @click="rollback()"
                         :disabled="loading"
                         class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-md transition text-sm"
@@ -175,7 +175,10 @@
                     </button>
                 </div>
             </template>
-            <p x-show="localImages.length === 0" class="text-gray-400">No local images found</p>
+            <p x-show="!localImages || localImages.length === 0" class="text-gray-400">No local images found</p>
+            <div x-show="localImages && localImages.length > 0" class="text-xs text-gray-500 mt-2">
+                <span x-text="'Total: ' + localImages.length + ' image(s)'"></span>
+            </div>
         </div>
     </div>
 
@@ -230,12 +233,13 @@ function dashboard() {
     return {
         status: {{ status | tojson }},
         versions: {{ versions | tojson }},
-        localImages: {{ local_images | tojson }},
+        localImages: {{ local_images | tojson }} || [],
         selectedVersion: '',
         upgradeSafe: false,
         upgradeWarnings: [],
         upgradeProgress: '',
         loading: false,
+        refreshing: false,
         modal: {
             show: false,
             type: 'alert', // 'alert' or 'confirm'
@@ -246,13 +250,103 @@ function dashboard() {
         },
 
         init() {
+            // Ensure localImages is an array
+            if (!Array.isArray(this.localImages)) {
+                console.log('Initializing localImages as empty array, current value:', this.localImages);
+                this.localImages = [];
+            } else {
+                console.log('localImages already initialized with', this.localImages.length, 'items');
+            }
+            // Load local images on init
+            this.loadLocalImages();
+            // Use $nextTick to ensure DOM is ready before setting selection
+            this.$nextTick(() => {
+                this.setCurrentVersionAsSelected();
+            });
             this.refreshStatus();
             // Auto-refresh status every 5 seconds to update CPU/memory
             setInterval(() => {
-                if (!this.loading) {
+                if (!this.loading && !this.refreshing) {
                     this.refreshStatus();
                 }
             }, 5000);
+        },
+
+        async loadLocalImages() {
+            try {
+                const response = await fetch('/api/local-images');
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('Local images API response:', data);
+                    if (Array.isArray(data)) {
+                        this.localImages = data;
+                        console.log('Loaded local images:', this.localImages.length, this.localImages);
+                    } else {
+                        console.error('Local images data is not an array:', typeof data, data);
+                        this.localImages = [];
+                    }
+                } else {
+                    console.error('Failed to fetch local images:', response.status, response.statusText);
+                    const errorData = await response.json().catch(() => ({}));
+                    console.error('Error details:', errorData);
+                }
+            } catch (error) {
+                console.error('Error loading local images:', error);
+                this.localImages = [];
+            }
+        },
+
+        getRollbackIndex() {
+            // Find the first image that is different from current version
+            // This will be the image we can rollback to
+            if (!this.localImages || !Array.isArray(this.localImages) || !this.status?.current_version) {
+                return -1;
+            }
+            
+            const currentVersion = this.status.current_version;
+            
+            // Try index 1 first (second-newest, which is what rollback_to_previous uses)
+            // But only if it's different from current version
+            if (this.localImages.length > 1) {
+                const secondImage = this.localImages[1];
+                if (secondImage && secondImage.version !== currentVersion) {
+                    return 1;
+                }
+            }
+            
+            // If index 1 is current version, find first different version (skip index 0 if it's also current)
+            for (let i = 0; i < this.localImages.length; i++) {
+                if (this.localImages[i].version !== currentVersion) {
+                    return i;
+                }
+            }
+            
+            return -1; // No rollback available
+        },
+
+        setCurrentVersionAsSelected() {
+            // Always set selected version to current version if it exists
+            if (this.status?.current_version) {
+                const currentVersion = this.status.current_version;
+                // Check if version exists in versions list (if versions are loaded)
+                if (this.versions?.length > 0) {
+                    const versionExists = this.versions.some(v => v.version === currentVersion);
+                    if (versionExists) {
+                        this.selectedVersion = currentVersion;
+                        console.log('Set selectedVersion to:', currentVersion);
+                    } else {
+                        // Current version not in list, but set it anyway so user can see what's running
+                        this.selectedVersion = currentVersion;
+                        console.log('Set selectedVersion to (not in list):', currentVersion);
+                    }
+                } else {
+                    // Versions not loaded yet, set it anyway
+                    this.selectedVersion = currentVersion;
+                    console.log('Set selectedVersion to (versions not loaded):', currentVersion);
+                }
+            } else {
+                console.log('No current_version in status');
+            }
         },
 
         formatBytes(bytes) {
@@ -286,15 +380,65 @@ function dashboard() {
         },
 
         async refreshStatus() {
-            this.loading = true;
+            // Use a separate flag for background refreshes to prevent button flickering
+            const isBackgroundRefresh = !this.loading;
+            if (isBackgroundRefresh) {
+                this.refreshing = true;
+            } else {
+                this.loading = true;
+            }
+            
+            // Store current selection to preserve it after refresh (only for background refreshes)
+            const currentSelection = this.selectedVersion;
             try {
                 const response = await fetch('/api/status');
                 const data = await response.json();
+                const previousVersion = this.status?.current_version;
                 this.status = data;
+                
+                // Also refresh local images if this is not a background refresh
+                if (!isBackgroundRefresh) {
+                    try {
+                        const localImagesResponse = await fetch('/api/local-images');
+                        if (localImagesResponse.ok) {
+                            const localImagesData = await localImagesResponse.json();
+                            if (Array.isArray(localImagesData)) {
+                                this.localImages = localImagesData;
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error refreshing local images:', error);
+                    }
+                }
+                
+                // If the version changed (e.g., after upgrade/rollback), set to new current version
+                if (previousVersion && previousVersion !== data.current_version) {
+                    this.setCurrentVersionAsSelected();
+                    this.upgradeSafe = false;
+                    this.upgradeWarnings = [];
+                } else if (isBackgroundRefresh) {
+                    // For background refreshes, preserve user selection if they've chosen a different version
+                    // Otherwise, set to current version if it exists in the list
+                    if (!currentSelection || currentSelection === previousVersion) {
+                        this.setCurrentVersionAsSelected();
+                    } else {
+                        // User has selected a different version, preserve their selection
+                        this.selectedVersion = currentSelection;
+                    }
+                } else {
+                    // For non-background refreshes, set to current version if no selection and it exists in list
+                    if (!currentSelection) {
+                        this.setCurrentVersionAsSelected();
+                    }
+                }
             } catch (error) {
                 console.error('Error refreshing status:', error);
             } finally {
-                this.loading = false;
+                if (isBackgroundRefresh) {
+                    this.refreshing = false;
+                } else {
+                    this.loading = false;
+                }
             }
         },
 
@@ -375,11 +519,11 @@ function dashboard() {
                             this.upgradeProgress = '';
                         } else {
                             this.upgradeProgress = 'Upgrade successful! Refreshing...';
+                            // Clear upgrade state, but selectedVersion will be set to new current version by refreshStatus
+                            this.upgradeSafe = false;
+                            this.upgradeWarnings = [];
                             setTimeout(() => {
                                 this.refreshStatus();
-                                this.selectedVersion = '';
-                                this.upgradeSafe = false;
-                                this.upgradeWarnings = [];
                                 this.upgradeProgress = '';
                             }, 2000);
                         }
@@ -413,6 +557,9 @@ function dashboard() {
                             this.upgradeProgress = '';
                         } else {
                             this.upgradeProgress = 'Rollback successful! Refreshing...';
+                            // Clear upgrade state, but selectedVersion will be set to new current version by refreshStatus
+                            this.upgradeSafe = false;
+                            this.upgradeWarnings = [];
                             setTimeout(() => {
                                 this.refreshStatus();
                                 this.upgradeProgress = '';
