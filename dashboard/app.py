@@ -120,6 +120,68 @@ def api_local_images():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/check-update")
+@login_required
+def api_check_update():
+    """API endpoint to check if a new stable version is available."""
+    try:
+        status = manager.get_container_status()
+        current_version = status.get("current_version")
+        
+        if not current_version:
+            return jsonify({
+                "update_available": False,
+                "message": "Current version unknown"
+            })
+        
+        # Get latest production version from GitHub
+        try:
+            import requests
+            response = requests.get(
+                "https://api.github.com/repos/n8n-io/n8n/releases/latest",
+                timeout=5
+            )
+            if response.status_code == 200:
+                latest_release = response.json()
+                latest_tag = latest_release.get("tag_name", "")
+                
+                # Strip 'v' and 'n8n@' prefixes if present
+                latest_version = latest_tag.replace("v", "").replace("n8n@", "")
+                
+                # Compare versions using semver
+                import semver
+                try:
+                    current_semver = semver.Version.parse(current_version)
+                    latest_semver = semver.Version.parse(latest_version)
+                    
+                    update_available = latest_semver > current_semver
+                    
+                    return jsonify({
+                        "update_available": update_available,
+                        "current_version": current_version,
+                        "latest_version": latest_version,
+                        "message": f"New version {latest_version} available!" if update_available else f"You're running the latest version ({current_version})"
+                    })
+                except ValueError:
+                    # Version parsing failed, can't compare
+                    return jsonify({
+                        "update_available": False,
+                        "message": "Unable to compare versions"
+                    })
+            else:
+                return jsonify({
+                    "update_available": False,
+                    "message": "Failed to check for updates"
+                })
+        except Exception as e:
+            return jsonify({
+                "update_available": False,
+                "message": f"Error checking for updates: {str(e)}"
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/check-upgrade", methods=["POST"])
 @login_required
 def api_check_upgrade():
