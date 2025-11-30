@@ -19,6 +19,20 @@ A self-hosted management dashboard for n8n that provides a web UI for version up
 - Port 8080 available for the dashboard
 - Port 5678 available for n8n (or modify in docker-compose.yml)
 
+### Docker Desktop File Sharing (Mac/Windows)
+
+**Important for Mac and Windows users**: Docker Desktop requires explicit file sharing permissions for backup functionality to work.
+
+1. Open Docker Desktop
+2. Go to **Settings** (gear icon) → **Resources** → **File Sharing**
+3. Ensure your project directory is in the shared paths list:
+   - For Mac: `/Users/your-username/Projects` or the full path to this project
+   - For Windows: `C:\Users\your-username\Projects` or the full path to this project
+4. If not listed, click **"+ Add"** and add the directory containing this project
+5. Click **"Apply & Restart"** (Docker Desktop will restart)
+
+Without this configuration, backup operations will fail with a "path is not shared" error.
+
 ## Quick Start
 
 1. **Clone or download this repository**
@@ -184,6 +198,19 @@ n8n-manager/
 
 ### Backup creation fails
 
+**Error: "mounts denied: The path is not shared from the host"**
+
+This error occurs on Docker Desktop for Mac/Windows when the project directory isn't shared:
+
+1. Open Docker Desktop
+2. Go to **Settings** → **Resources** → **File Sharing**
+3. Add your project directory to the shared paths:
+   - Mac: `/Users/your-username/Projects` (or the full path to this project)
+   - Windows: `C:\Users\your-username\Projects` (or the full path to this project)
+4. Click **"Apply & Restart"**
+5. Try the backup operation again
+
+**Other backup issues:**
 - Ensure `./backups` directory exists and is writable
 - Check disk space availability
 - Verify volume name matches: `docker volume ls | grep n8n_data`

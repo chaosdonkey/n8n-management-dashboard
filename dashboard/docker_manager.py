@@ -9,8 +9,20 @@ class N8NManager:
     def __init__(self, container_name: str = "n8n"):
         """Initialize the n8n manager with Docker client."""
         self.container_name = container_name
-        self.client = docker.from_env()
+        self._client = None
         self.image_name = "n8nio/n8n"
+    
+    @property
+    def client(self):
+        """Lazy initialization of Docker client."""
+        if self._client is None:
+            try:
+                # Initialize client without immediate ping to avoid build-time errors
+                self._client = docker.from_env()
+                # Only test connection when actually needed (at runtime)
+            except Exception as e:
+                raise Exception(f"Failed to connect to Docker: {str(e)}. Make sure Docker Desktop is running.")
+        return self._client
 
     def get_available_versions(self, limit: int = 20) -> List[Dict[str, str]]:
         """
@@ -211,7 +223,7 @@ class N8NManager:
         Create a backup of the n8n_data volume.
         
         Args:
-            backup_dir: Directory to store backup files
+            backup_dir: Directory to store backup files (inside container)
             
         Returns:
             Filename of the created backup
@@ -219,15 +231,28 @@ class N8NManager:
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_filename = f"n8n_backup_{timestamp}.tar.gz"
-            backup_path = f"{backup_dir}/{backup_filename}"
             
-            # Use busybox to create tarball
+            # Get the actual host path for backups by checking the dashboard container's mounts
+            # This is necessary for Docker Desktop on Mac which requires shared paths
+            dashboard_container = self.client.containers.get("n8n-manager-dashboard")
+            dashboard_mounts = dashboard_container.attrs.get("Mounts", [])
+            host_backup_path = None
+            
+            for mount in dashboard_mounts:
+                if mount.get("Destination") == "/app/backups":
+                    host_backup_path = mount.get("Source")
+                    break
+            
+            if not host_backup_path:
+                raise Exception("Could not find backup directory mount. Ensure ./backups is mounted in docker-compose.yml")
+            
+            # Use busybox to create tarball with the host path
             self.client.containers.run(
                 "busybox:latest",
-                command=f"tar czf /backup/{backup_filename} -C /source .",
+                command=f"sh -c 'tar czf /backup/{backup_filename} -C /source . && chmod 666 /backup/{backup_filename}'",
                 volumes={
                     "n8n_data": {"bind": "/source", "mode": "ro"},
-                    backup_dir: {"bind": "/backup", "mode": "rw"}
+                    host_backup_path: {"bind": "/backup", "mode": "rw"}
                 },
                 remove=True
             )
@@ -341,10 +366,14 @@ class N8NManager:
                     volumes_config = {}
                     for mount in mounts:
                         if mount.get("Type") == "volume":
-                            volumes_config[mount["Name"]] = {
-                                "bind": mount["Destination"],
-                                "mode": mount.get("Mode", "rw")
-                            }
+                            # Handle both "Destination" and "destination" keys
+                            destination = mount.get("Destination") or mount.get("destination")
+                            mount_name = mount.get("Name")
+                            if mount_name and destination:
+                                volumes_config[mount_name] = {
+                                    "bind": destination,
+                                    "mode": mount.get("Mode", mount.get("mode", "rw"))
+                                }
                 
                 # Extract network information
                 network_settings = container.attrs.get("NetworkSettings", {})
@@ -381,8 +410,8 @@ class N8NManager:
             if callback:
                 callback("Creating new container...")
             
-            # Prepare port bindings (docker-py 7.0.0 format)
-            # Format: {"container_port/tcp": host_port}
+            # Prepare ports for container creation
+            # Format: {"container_port/tcp": None} for auto-assignment or {"container_port/tcp": host_port}
             ports = {}
             if ports_config:
                 for container_port, host_port in ports_config.items():
@@ -397,13 +426,27 @@ class N8NManager:
             # Format: {volume_name: {"bind": mount_point, "mode": "rw"}}
             volumes = volumes_config or {"n8n_data": {"bind": "/home/node/.n8n", "mode": "rw"}}
             
-            # Create container with ports parameter (docker-py handles port bindings)
+            # Ensure volumes dict is properly formatted
+            if not volumes or not isinstance(volumes, dict):
+                volumes = {"n8n_data": {"bind": "/home/node/.n8n", "mode": "rw"}}
+            
+            # Validate volumes format
+            validated_volumes = {}
+            for vol_name, vol_config in volumes.items():
+                if isinstance(vol_config, dict) and "bind" in vol_config:
+                    validated_volumes[vol_name] = vol_config
+                else:
+                    # If format is wrong, use default
+                    validated_volumes[vol_name] = {"bind": "/home/node/.n8n", "mode": "rw"}
+            
+            # Create container using ports parameter (docker-py handles port bindings automatically)
+            # Use ports parameter instead of host_config to avoid compatibility issues
             new_container = self.client.containers.create(
                 image=image_tag,
                 name=self.container_name,
                 detach=True,
                 ports=ports,
-                volumes=volumes,
+                volumes=validated_volumes,
                 environment=env_list,
                 restart_policy={"Name": "unless-stopped"}
             )
